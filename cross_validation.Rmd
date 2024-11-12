@@ -1,0 +1,282 @@
+---
+ctitle: "Cross Validation"
+author: "ak5357"
+date: "2024-11-12"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(modelr)
+library(mgcv)
+library(SemiPar)
+
+# So that the random-ness happens the same way every time we knit
+set.seed(1)
+```
+
+```{r import_data}
+data("lidar")
+
+lidar_df =
+  lidar |> 
+  as_tibble() |> 
+  mutate(id = row_number()) |> 
+  relocate(id)
+```
+
+```{r initial_visualization}
+lidar_df |> 
+  ggplot(aes(x = range, y = logratio)) +
+  geom_point()
+```
+
+
+# Try to do CV
+
+Cross Validation: We'll compare 3 models -- one linear, one smooth, and one wiggly.
+
+Construct training and testing dataframes.
+```{r create_train_test_datasets}
+train_df = sample_frac(lidar_df, size = .8)
+test_df = anti_join(lidar_df, train_df, by = "id")
+```
+
+Visualize training vs. testing datasets.
+```{r visualize_train_test_data}
+train_df |> 
+  ggplot(aes(x = range, y = logratio)) +
+  geom_point() + # training dataset
+  geom_point(data = test_df, color = "green") # testing dataset
+```
+
+### Fit three models.
+
+* Linear Model
+* Generalized Additive Model
+```{r generate_models}
+linear_mod = lm(logratio ~ range, data = train_df)
+smooth_mod = gam(logratio ~ s(range), data = train_df)
+wiggly_mod = gam(logratio ~ s(range, k = 30), sp = 10e-6, data = train_df)
+```
+
+### Look at fits.
+
+Linear Model.
+```{r visualize_linear_mod}
+train_df |> 
+  add_predictions(linear_mod) |> 
+  ggplot(aes(x = range, y = logratio)) + 
+  geom_point() +
+  geom_point(data = test_df, color = "green") +
+  geom_line(aes(y = pred), color = "red")
+```
+
+Smooth Model.
+```{r visualize_smooth_mod}
+train_df |> 
+  add_predictions(smooth_mod) |> 
+  ggplot(aes(x = range, y = logratio)) + 
+  geom_point() +
+  geom_point(data = test_df, color = "green") +
+  geom_line(aes(y = pred), color = "red")
+```
+
+Wiggly Model.
+```{r visualize_wiggly_mod}
+train_df |> 
+  add_predictions(wiggly_mod) |> 
+  ggplot(aes(x = range, y = logratio)) + 
+  geom_point() +
+  geom_point(data = test_df, color = "green") +
+  geom_line(aes(y = pred), color = "red")
+```
+
+### Assess Model
+
+```{r}
+rmse(linear_mod, test_df)
+rmse(smooth_mod, test_df)
+rmse(wiggly_mod, test_df)
+```
+
+### Repeat train / test split
+
+Create 100 sample sets.
+```{r}
+cv_df =
+  crossv_mc(lidar_df, 100)
+```
+
+If you want to see the actual data in one of the samples.
+```{r}
+cv_df |> 
+  pull(train) |> 
+  nth(3) |> 
+  as_tibble()
+```
+
+Create as tibbles.
+```{r}
+cv_df =
+  crossv_mc(lidar_df, 100) |> 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+```
+
+### Fit models, extract RMSEs
+
+```{r}
+cv_results_df =
+  cv_df |> 
+  mutate(
+    linear_mod = map(train, \(x) lm(logratio ~ range, data = x)),
+    smooth_mod = map(train, \(x) gam(logratio ~ s(range), data = x)),
+    wiggly_mod = map(train, \(x) gam(logratio ~ s(range, k = 30), sp = 10e-6, data = x))
+  ) |> 
+  mutate(
+    rmse_linear = map2_dbl(linear_mod, test, rmse),
+    rmse_smooth = map2_dbl(smooth_mod, test, rmse),
+    rmse_wiggly = map2_dbl(wiggly_mod, test, rmse)
+  )
+
+cv_results_df  
+```
+
+Look at RMSE distribution
+
+```{r}
+cv_results_df |> 
+  select(starts_with("rmse")) |> 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) |> 
+  ggplot(aes(x = model, y = rmse)) +
+  geom_violin()
+```
+
+
+# Nepali children DF
+
+```{r}
+child_df =
+  read_csv("./data/nepalese_children.csv") |> 
+  mutate(
+    weight_cp7 = (weight > 7) * (weight - 7)
+  )
+
+child_df
+```
+
+```{r}
+child_df |> 
+  ggplot(aes(x = weight, y = armc)) +
+  geom_point(alpha = .5)
+```
+
+Fit some models.
+```{r}
+linear_mod = lm(armc ~ weight, data = child_df)
+pwl_mod = lm(armc ~ weight + weight_cp7, data = child_df)
+smooth_mod = gam(armc ~ s(weight), data = child_df)
+```
+
+Look at models.
+```{r}
+child_df |> 
+  add_predictions(linear_mod) |> 
+  ggplot(aes(x = weight, y = armc)) +
+  geom_point(alpha = .5) +
+  geom_line(aes(y = pred), color = "red")
+```
+
+```{r}
+child_df |> 
+  add_predictions(pwl_mod) |> 
+  ggplot(aes(x = weight, y = armc)) +
+  geom_point(alpha = .5) +
+  geom_line(aes(y = pred), color = "red")
+```
+
+```{r}
+child_df |> 
+  add_predictions(smooth_mod) |> 
+  ggplot(aes(x = weight, y = armc)) +
+  geom_point(alpha = .5) +
+  geom_line(aes(y = pred), color = "red")
+```
+
+
+```{r}
+child_df |> 
+  add_predictions(linear_mod) |> 
+  rename(linear_pred = pred) |> 
+  add_predictions(pwl_mod) |> 
+  rename(pwl_pred = pred) |> 
+  add_predictions(smooth_mod) |> 
+  rename(smooth_pred = pred) |> 
+  ggplot(aes(x = weight, y = armc)) +
+  geom_point(alpha = .5) +
+  geom_line(aes(y = linear_pred), color = "red") +
+  geom_line(aes(y = pwl_pred), color = "blue") +
+  geom_line(aes(y = smooth_pred), color = "green")
+```
+
+
+CV to select models.
+
+```{r}
+cv_df = 
+  crossv_mc(child_df, 100) |> 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+```
+
+Apply models and extract RMSE.
+
+```{r}
+cv_res_df =
+  cv_df |> 
+  mutate(
+    linear_mod = map(train, \(x) lm(armc ~ weight, data = x)),
+    pwl_mod = map(train, \(x) lm(armc ~ weight + weight_cp7, data = x)),
+    smooth_mod = map(train, \(x) gam(armc ~ s(weight), data = x))
+  ) |> 
+  mutate(
+    rmse_linear = map2_dbl(linear_mod, test, rmse),
+    rmse_pwl = map2_dbl(pwl_mod, test, rmse),
+    rmse_smooth = map2_dbl(smooth_mod, test, rmse)
+  )
+
+cv_res_df
+```
+
+```{r}
+cv_res_df |> 
+  select(starts_with("rmse")) |> 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) |> 
+  ggplot(aes(x = model, y = rmse)) +
+  geom_violin()
+```
+
+
+
+
+
+
+
+
+
+
